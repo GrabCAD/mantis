@@ -5,6 +5,11 @@ set(CMAKE_CXX_STANDARD 17)
 
 include(FetchContent)
 
+set(EIGEN_SAVE_BUILD_TESTING ${BUILD_TESTING})
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+add_subdirectory(third_party/eigen)
+set(BUILD_TESTING ${EIGEN_SAVE_BUILD_TESTING} CACHE BOOL "" FORCE)
+
 option(MANTIS_BUILD_EXAMPLES "Build the examples" OFF)
 option(MANTIS_BUILD_BENCH "Build the benchmarks" OFF)
 option(MANTIS_BUILD_TESTS "Build the tests" ON)
@@ -20,6 +25,11 @@ add_library(mantis
         mantis.h
         mantis.cpp
 )
+
+# Enable GEO_DEBUG assertions in Debug builds for consistent Debug/Release behavior
+# This ensures GEO's internal assertions match MSVC's _DEBUG bounds checking
+target_compile_definitions(delaunay PRIVATE $<$<CONFIG:Debug>:GEO_DEBUG>)
+target_compile_definitions(mantis PRIVATE $<$<CONFIG:Debug>:GEO_DEBUG>)
 
 if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     target_compile_options(mantis PRIVATE "-march=native")

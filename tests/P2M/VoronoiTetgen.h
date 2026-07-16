@@ -30,7 +30,9 @@ public:
 private:
 	int num_cells;
 	tetgenmesh m;
-	Eigen::Vector3d *_verts; 
+	tetgenio in;        // must outlive Delaunay() since m.in points here
+	tetgenbehavior b;   // must outlive Delaunay() since m.b points here
+	Eigen::Vector3d *_verts;
 	std::pair<int, int> *_edges; 
 
 	void Delaunay(const std::vector<Eigen::Vector3d>& pts, const double& limit_cube_len);

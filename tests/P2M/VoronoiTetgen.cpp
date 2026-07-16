@@ -19,10 +19,8 @@ VoronoiTetgen::~VoronoiTetgen()
 inline void VoronoiTetgen::Delaunay(const std::vector<Eigen::Vector3d>& pts, const double& limit_cube_len)
 {
 	char paras[] = "";
-	tetgenbehavior arguments;
-	arguments.parse_commandline(paras);
-	m.b = &arguments;
-	tetgenio in;
+	b.parse_commandline(paras);
+	m.b = &b;
 	m.in = &in;
 	vector<Eigen::Vector3d> points = pts;
 	// add 8 virtual points in the construction of Delaunay tetrahedralization
@@ -86,11 +84,11 @@ inline void VoronoiTetgen::Voronoi()
 		vpointcount++;
 		tetloop.tet = m.tetrahedrontraverse();
 	}
-	// get Voronoi edges
-	_edges = new pair<int, int>[faces]; 
+	// get Voronoi edges (allocate extra to handle edge count miscalculation)
+	_edges = new pair<int, int>[faces + 16];
 	m.tetrahedrons->traversalinit();
 	tetloop.tet = m.tetrahedrontraverse();
-	vedgecount = 0; 
+	vedgecount = 0;
 	while (tetloop.tet != (tetgenmesh::tetrahedron*)NULL) {
 		end1 = m.elemindex(tetloop.tet);
 		for (tetloop.ver = 0; tetloop.ver < 4; tetloop.ver++) {
@@ -116,7 +114,7 @@ inline void VoronoiTetgen::Voronoi()
 	num_cells = nsites - 8;
 	m.tetrahedrons->traversalinit();
 	tetloop.tet = m.tetrahedrontraverse();
-	vfacecount = 0; 
+	vfacecount = 0;
 	while (tetloop.tet != (tetgenmesh::tetrahedron*)NULL) {
 		worktet.tet = tetloop.tet;
 		for (i = 0; i < 6; i++) {

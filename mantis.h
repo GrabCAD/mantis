@@ -23,10 +23,12 @@ struct Result {
 struct Impl;
 
 struct AccelerationStructure {
+    /* Build from a strided vertex array and packed triangle index array.
+     * points is interpreted as: vertices[i] = {points[i*stride+0], points[i*stride+1], points[i*stride+2]}.
+     * indices is a flat array of 3 uint32_t per face (indices[3*f+i] = vertex id).
+     * A default stride of 3 covers the common packed-layout case. */
     AccelerationStructure(const float *points, size_t num_points, const uint32_t *indices, size_t num_faces,
-                   float limit_cube_len = 1e3f);
-
-    AccelerationStructure(const std::vector<std::array<float, 3>>& points, const std::vector<std::array<uint32_t, 3>>& triangles, float limit_cube_len = 1e3f);
+                   float limit_cube_len = 1e3f, size_t vertex_stride = 3);
 
     // no copying
     AccelerationStructure(const AccelerationStructure&) = delete;
@@ -35,9 +37,12 @@ struct AccelerationStructure {
     AccelerationStructure(AccelerationStructure&&) noexcept;
     AccelerationStructure& operator=(AccelerationStructure&&) noexcept;
 
+    /* Compute closest point on the mesh to (x, y, z). */
     Result calc_closest_point(float x, float y, float z) const;
 
-    Result calc_closest_point(std::array<float, 3> q) const;
+    /* Compute closest point on the mesh to *q.
+     * q must point to at least 3 consecutive floats {x, y, z}. */
+    Result calc_closest_point(const float q[3]) const;
 
     size_t num_edges() const;
     size_t num_faces() const;

@@ -5,6 +5,7 @@
 #include <unordered_set>
 #include <algorithm>
 #include <numeric>
+#include <memory>
 #include <thread>
 
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
@@ -702,6 +703,16 @@ GEO::vec3 to_vec3(GEO::vec4 v) {
     return {v.x, v.y, v.z};
 }
 
+/* Read a vertex from a strided float array.
+ * stride is given in number of float elements per vertex (stride == 3 for packed data).
+ */
+GEO::vec3 read_vertex(const float *vertices, size_t idx, size_t stride) {
+    assert(vertices != nullptr);
+    return GEO::vec3{(double) vertices[idx * stride + 0],
+                     (double) vertices[idx * stride + 1],
+                     (double) vertices[idx * stride + 2]};
+}
+
 double eval_plane(GEO::vec4 plane, GEO::vec3 p) {
     return plane.x * p.x + plane.y * p.y + plane.z * p.z + plane.w;
 }
@@ -831,7 +842,8 @@ bool check_and_create_bounding_box(
 
 struct Impl {
 
-    Impl(const std::vector<GEO::vec3> &points, const std::vector<std::array<uint32_t, 3>> &triangles,
+    Impl(const float *vertices, size_t num_vertices, size_t stride,
+         const uint32_t *triangles_data, size_t num_triangles,
          double limit_cube_len);
 
     // for each voronoi cell, check every face of the mesh if the vertex corresponding to the cell
@@ -841,10 +853,19 @@ struct Impl {
 
     Result calc_closest_point(GEO::vec3 q);
 
-    Bvh bvh;
+    ~Impl();
 
-    std::vector<GEO::vec3> points;
-    std::vector<std::array<uint32_t, 3>> triangles;
+    /* BVH for nearest-vertex lookup. Owned via unique_ptr since Bvh has no default ctor. */
+    std::unique_ptr<Bvh> bvh;
+
+    /* Owned vertex buffer (GEO::vec3 = double precision) for internal math.
+     * Allocated during construction, may be modified by deduplication. */
+    GEO::vec3 *points = nullptr;
+    size_t num_points = 0;
+
+    /* Owned flat triangle index array (3 uint32_t per face). */
+    uint32_t *triangles = nullptr;
+    size_t num_triangles = 0;
 
     double limit_cube_len = 0;
 
@@ -881,8 +902,10 @@ struct PointHash {
     }
 };
 
-bool check_points(std::vector<GEO::vec3> points) {
-    for(auto p : points) {
+bool check_points(const GEO::vec3 *points, size_t n) {
+    assert(points != nullptr);
+    for(size_t i = 0; i < n; ++i) {
+        auto &p = points[i];
         if(!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) {
             return false;
         }
@@ -890,8 +913,8 @@ bool check_points(std::vector<GEO::vec3> points) {
 
     // check for duplicates
     std::unordered_map<GEO::vec3, int, PointHash, PointEq> point_map;
-    for(auto p : points) {
-        point_map[p]++;
+    for(size_t i = 0; i < n; ++i) {
+        point_map[points[i]]++;
     }
 
     for(auto [p, count] : point_map) {
@@ -903,47 +926,98 @@ bool check_points(std::vector<GEO::vec3> points) {
     return true;
 }
 
-void deduplicate_points(std::vector<GEO::vec3>& points, std::vector<std::array<uint32_t, 3>>& triangles) {
-    std::vector<int> vertices(points.size());
-    std::iota(vertices.begin(), vertices.end(), 0);
+/* Result of vertex deduplication: owned arrays + counts. */
+struct DedupResult {
+    GEO::vec3 *points = nullptr;
+    uint32_t *triangles = nullptr;
+    size_t num_points = 0;
+    size_t num_triangles = 0;
+};
 
-    std::sort(vertices.begin(), vertices.end(), [&points](int a, int b) {
-        return std::tie(points[a].x, points[a].y, points[a].z) < std::tie(points[b].x, points[b].y, points[b].z);
+/* Deduplicate vertices from strided float array, also remapping face indices.
+ * Returns owned arrays; caller must delete[] both .points and .triangles. */
+DedupResult deduplicate_points(
+        const float *vertices, size_t num_vertices, size_t stride,
+        const uint32_t *triangles_data, size_t num_triangles) {
+
+    /* Build a GEO::vec3 copy for sorting. */
+    std::vector<GEO::vec3> points(num_vertices);
+    for (size_t i = 0; i < num_vertices; ++i) {
+        points[i] = read_vertex(vertices, i, stride);
+    }
+
+    /* Build a flat triangle copy for remapping. */
+    std::vector<uint32_t> tri_flat(3 * num_triangles);
+    for (size_t i = 0; i < 3 * num_triangles; ++i) {
+        tri_flat[i] = triangles_data[i];
+    }
+
+    std::vector<int> order(num_vertices);
+    std::iota(order.begin(), order.end(), 0);
+
+    std::sort(order.begin(), order.end(), [&points](int a, int b) {
+        return std::tie(points[a].x, points[a].y, points[a].z) <
+               std::tie(points[b].x, points[b].y, points[b].z);
     });
 
     std::vector<GEO::vec3> unique_points;
-    unique_points.reserve(points.size());
-    std::vector<uint32_t> index_map(points.size());
+    unique_points.reserve(num_vertices);
+    std::vector<uint32_t> index_map(num_vertices);
 
-    auto is_equal = [](const GEO::vec3& a, const GEO::vec3& b) {
+    auto is_equal = [](const GEO::vec3 &a, const GEO::vec3 &b) {
         return a.x == b.x && a.y == b.y && a.z == b.z;
     };
 
-    for (size_t i = 0; i < vertices.size(); ++i) {
-        if (i == 0 || !is_equal(points[vertices[i]], points[vertices[i - 1]])) {
-            unique_points.push_back(points[vertices[i]]);
+    for (size_t i = 0; i < order.size(); ++i) {
+        if (i == 0 || !is_equal(points[order[i]], points[order[i - 1]])) {
+            unique_points.push_back(points[order[i]]);
         }
-        index_map[vertices[i]] = static_cast<uint32_t>(unique_points.size() - 1);
+        index_map[order[i]] = static_cast<uint32_t>(unique_points.size() - 1);
     }
 
-    if(unique_points.size() == points.size()) {
-        return;
+    /* No duplicates found, allocate owned copies of the input data. */
+    if (unique_points.size() == num_vertices) {
+        GEO::vec3 *result_pts = new GEO::vec3[num_vertices];
+        for (size_t i = 0; i < num_vertices; ++i) {
+            result_pts[i] = points[i];
+        }
+        uint32_t *result_tri = new uint32_t[3 * num_triangles];
+        for (size_t i = 0; i < 3 * num_triangles; ++i) {
+            result_tri[i] = triangles_data[i];
+        }
+        return {result_pts, result_tri, num_vertices, num_triangles};
     }
 
-    points.swap(unique_points);
+    /* Duplicates found: use deduplicated points and remapped indices. */
+    GEO::vec3 *result_pts = new GEO::vec3[unique_points.size()];
+    for (size_t i = 0; i < unique_points.size(); ++i) {
+        result_pts[i] = unique_points[i];
+    }
 
-    for (auto& triangle : triangles) {
+    uint32_t *result_tri = new uint32_t[3 * num_triangles];
+    for (size_t f = 0; f < num_triangles; ++f) {
         for (int i = 0; i < 3; ++i) {
-            triangle[i] = index_map[triangle[i]];
+            result_tri[3 * f + i] = index_map[tri_flat[3 * f + i]];
         }
     }
+
+    return {result_pts, result_tri, unique_points.size(), num_triangles};
 }
 
-Impl::Impl(const std::vector<GEO::vec3> &points, const std::vector<std::array<index_t, 3>> &triangles,
+Impl::Impl(const float *vertices, size_t num_vertices, size_t stride,
+           const uint32_t *triangles_data, size_t num_triangles,
            double limit_cube_len)
-        : points(points), triangles(triangles), bvh(points), limit_cube_len(limit_cube_len) {
+        : limit_cube_len(limit_cube_len) {
 
-    assert(check_points(points));
+    /* Deduplicate points and remap triangle indices. Returns owned arrays + counts. */
+    DedupResult dedup = deduplicate_points(vertices, num_vertices, stride,
+                                          triangles_data, num_triangles);
+    assert(dedup.points != nullptr);
+    assert(dedup.triangles != nullptr);
+    this->points = dedup.points;
+    this->num_points = dedup.num_points;
+    this->triangles = dedup.triangles;
+    this->num_triangles = dedup.num_triangles;
 
     static int init_geogram = [] {
         GEO::initialize();
@@ -951,18 +1025,26 @@ Impl::Impl(const std::vector<GEO::vec3> &points, const std::vector<std::array<in
     }();
     (void) init_geogram;
 
+    /* Verify point validity on deduplicated data. */
+    assert(check_points(points, num_points));
+
     std::map<std::pair<index_t, index_t>, EdgeData> edge_map;
 
-    for (auto t: triangles) {
+    /* Iterate over all faces and build the edge map.
+     * Triangle face i has vertices at triangles[3*i+0], triangles[3*i+1], triangles[3*i+2]. */
+    for (size_t f = 0; f < num_triangles; ++f) {
+        index_t vi[3] = {(index_t)triangles[3 * f + 0],
+                         (index_t)triangles[3 * f + 1],
+                         (index_t)triangles[3 * f + 2]};
         for (int i = 0; i < 3; ++i) {
-            index_t v0 = t[i];
-            index_t v1 = t[(i + 1) % 3];
+            index_t v0 = vi[i];
+            index_t v1 = vi[(i + 1) % 3];
             if (v0 > v1) {
                 std::swap(v0, v1);
             }
             auto [it, inserted] = edge_map.emplace(std::pair{v0, v1}, EdgeData{v0, v1});
             if (inserted) {
-                // populate end planes of edge
+                /* Populate end planes of this edge. */
                 GEO::vec3 start_pt = points[v0];
                 GEO::vec3 end_pt = points[v1];
 
@@ -975,9 +1057,11 @@ Impl::Impl(const std::vector<GEO::vec3> &points, const std::vector<std::array<in
         }
     }
 
-    faces.resize(triangles.size());
-    for (index_t f = 0; f < faces.size(); ++f) {
-        auto [v0, v1, v2] = triangles[f];
+    faces.resize(num_triangles);
+    for (index_t f = 0; f < (index_t)faces.size(); ++f) {
+        index_t v0 = (index_t)triangles[3 * f + 0];
+        index_t v1 = (index_t)triangles[3 * f + 1];
+        index_t v2 = (index_t)triangles[3 * f + 2];
         GEO::vec3 p0 = points[v0];
         GEO::vec3 p1 = points[v1];
         GEO::vec3 p2 = points[v2];
@@ -1022,6 +1106,10 @@ Impl::Impl(const std::vector<GEO::vec3> &points, const std::vector<std::array<in
         edge_index[key] = edges.size() - 1;
     }
 
+    /* Build BVH from owned vertex array. */
+    std::vector<GEO::vec3> bvh_pts(points, points + num_points);
+    bvh = std::make_unique<Bvh>(bvh_pts);
+
     compute_interception_list();
 }
 
@@ -1030,12 +1118,13 @@ Impl::Impl(const std::vector<GEO::vec3> &points, const std::vector<std::array<in
 // "intercepts" the face. This means that after trimming the cell by the face's edge planes, it is
 // contained in the convex region that is closer
 void Impl::compute_interception_list() {
-    const index_t nb_points = points.size();
-    const index_t nb_faces = triangles.size();
-    const index_t nb_edges = edges.size();
+    const index_t nb_points = (index_t)num_points;
+    const index_t nb_faces = (index_t)num_triangles;
+    const index_t nb_edges = (index_t)edges.size();
 
     double l = limit_cube_len * 2;
-    auto copy = points;
+    /* Build a temporary vector of points for Delaunay, adding corner sentinel vertices. */
+    std::vector<GEO::vec3> copy(points, points + num_points);
     copy.emplace_back(l, l, l);
     copy.emplace_back(-l, l, l);
     copy.emplace_back(l, -l, l);
@@ -1045,7 +1134,7 @@ void Impl::compute_interception_list() {
     copy.emplace_back(l, -l, -l);
     copy.emplace_back(-l, -l, -l);
 
-    assert(check_points(copy));
+    assert(check_points(copy.data(), copy.size()));
 
     GEO::SmartPointer<GEO::PeriodicDelaunay3d> delaunay = new GEO::PeriodicDelaunay3d(false, 1.0);
     delaunay->set_keeps_infinite(true);
@@ -1099,11 +1188,12 @@ void Impl::compute_interception_list() {
             return distance_to_plane_squared(p, plane);
         };
 
-        std::unordered_set < index_t > visited = {triangles[f][0], triangles[f][1], triangles[f][2]};
+        index_t fv[3] = {(index_t)triangles[3 * f + 0], (index_t)triangles[3 * f + 1], (index_t)triangles[3 * f + 2]};
+        std::unordered_set < index_t > visited = {fv[0], fv[1], fv[2]};
         std::queue<index_t> queue;
-        queue.push(triangles[f][0]);
-        queue.push(triangles[f][1]);
-        queue.push(triangles[f][2]);
+        queue.push(fv[0]);
+        queue.push(fv[1]);
+        queue.push(fv[2]);
 
         while (!queue.empty()) {
             index_t v = queue.front();
@@ -1288,7 +1378,6 @@ void Impl::compute_interception_list() {
         // round up nb of face batches
         size_t num_face_packed = (intercepted_faces[v].size() + SimdWidth - 1) / SimdWidth;
         intercepted_faces_packed[v].resize(num_face_packed);
-        intercepted_faces_bb[v].resize(num_face_packed);
 
         for (size_t i = 0; i < num_face_packed; ++i) {
             PackedFace packed{};
@@ -1321,7 +1410,7 @@ void Impl::compute_interception_list() {
 }
 
 Result Impl::calc_closest_point(GEO::vec3 q) {
-    auto [v, v_dist2] = bvh.closestPoint(q);
+    auto [v, v_dist2] = bvh->closestPoint(q);
 
     float32xN_t qx = dupf32((float) q.x);
     float32xN_t qy = dupf32((float) q.y);
@@ -1394,17 +1483,17 @@ Result Impl::calc_closest_point(GEO::vec3 q) {
     }
 
     GEO::vec3 cp;
-    if (result.primitive_index < points.size()) {
+    if (result.primitive_index < (index_t)num_points) {
         cp = points[result.primitive_index];
         result.type = PrimitiveType::Vertex;
-    } else if (result.primitive_index < points.size() + edges.size()) {
-        int offset = (int) points.size();
+    } else if (result.primitive_index < (index_t)(num_points + edges.size())) {
+        int offset = (int) num_points;
         const auto &e = edges[result.primitive_index - offset];
         cp = project_line(q, points[e.start], points[e.end]);
         result.primitive_index -= offset;
         result.type = PrimitiveType::Edge;
     } else {
-        int offset = (int) points.size() + (int) edges.size();
+        int offset = (int) num_points + (int) edges.size();
         auto f = faces[result.primitive_index - offset];
         cp = project_plane(q, f);
         result.primitive_index -= offset;
@@ -1419,24 +1508,8 @@ Result Impl::calc_closest_point(GEO::vec3 q) {
 
 AccelerationStructure::AccelerationStructure(const float *points, size_t num_points, const uint32_t *indices,
                                              size_t num_faces,
-                                             float limit_cube_len) {
-    std::vector<GEO::vec3> points_vec(num_points);
-    for (size_t i = 0; i < num_points; ++i) {
-        points_vec[i] = {points[3 * i], points[3 * i + 1], points[3 * i + 2]};
-    }
-    std::vector<std::array<uint32_t, 3>> faces_vec(num_faces);
-    for (size_t i = 0; i < num_faces; ++i) {
-        faces_vec[i] = {indices[3 * i], indices[3 * i + 1], indices[3 * i + 2]};
-    }
-    deduplicate_points(points_vec, faces_vec);
-    impl = new Impl(points_vec, faces_vec, limit_cube_len);
-}
-
-AccelerationStructure::AccelerationStructure(const std::vector<std::array<float, 3>> &points,
-                                             const std::vector<std::array<uint32_t, 3>> &triangles,
-                                             float limit_cube_len) :
-        AccelerationStructure((const float *) points.data(), points.size(), (const uint32_t *) triangles.data(),
-                              triangles.size(), limit_cube_len) {}
+                                             float limit_cube_len, size_t vertex_stride)
+        : impl(new Impl(points, num_points, vertex_stride, indices, num_faces, limit_cube_len)) {}
 
 AccelerationStructure::AccelerationStructure(AccelerationStructure &&other) noexcept {
     impl = other.impl;
@@ -1456,7 +1529,7 @@ Result AccelerationStructure::calc_closest_point(float x, float y, float z) cons
     return impl->calc_closest_point({x, y, z});
 }
 
-Result AccelerationStructure::calc_closest_point(std::array<float, 3> q) const {
+Result AccelerationStructure::calc_closest_point(const float q[3]) const {
     return impl->calc_closest_point({q[0], q[1], q[2]});
 }
 
@@ -1467,8 +1540,8 @@ std::vector<std::array<uint32_t, 3>> AccelerationStructure::get_face_edges() con
     for (size_t i = 0; i < num_faces(); ++i) {
         const auto &f = impl->faces[i];
         for (size_t j = 0; j < 3; ++j) {
-            auto v0 = impl->triangles[i][j];
-            auto v1 = impl->triangles[i][(j + 1) % 3];
+            auto v0 = impl->triangles[3 * i + j];
+            auto v1 = impl->triangles[3 * i + (j + 1) % 3];
             auto it = impl->edge_index.find(std::minmax(v0, v1));
             assert(it != impl->edge_index.end());
             auto idx = it->second;
@@ -1488,12 +1561,16 @@ std::vector<std::pair<uint32_t, uint32_t>> AccelerationStructure::get_edge_verti
 }
 
 std::vector<std::array<uint32_t, 3>> AccelerationStructure::get_faces() const {
-    return impl->triangles;
+    std::vector<std::array<uint32_t, 3>> result(num_faces());
+    for (size_t i = 0; i < num_faces(); ++i) {
+        result[i] = {impl->triangles[3 * i + 0], impl->triangles[3 * i + 1], impl->triangles[3 * i + 2]};
+    }
+    return result;
 }
 
 std::vector<std::array<float, 3>> AccelerationStructure::get_positions() const {
-    std::vector<std::array<float, 3>> result(num_vertices());
-    for (size_t i = 0; i < num_vertices(); ++i) {
+    std::vector<std::array<float, 3>> result(impl->num_points);
+    for (size_t i = 0; i < impl->num_points; ++i) {
         const auto &p = impl->points[i];
         result[i] = {float(p.x), float(p.y), float(p.z)};
     }
@@ -1510,11 +1587,17 @@ size_t AccelerationStructure::num_edges() const {
 }
 
 size_t AccelerationStructure::num_faces() const {
-    return impl->triangles.size();
+    return impl->num_triangles;
 }
 
 size_t AccelerationStructure::num_vertices() const {
-    return impl->points.size();
+    return impl->num_points;
+}
+
+/* Impl destructor: free owned vertex and triangle arrays. */
+Impl::~Impl() {
+    delete[] points;
+    delete[] triangles;
 }
 
 AccelerationStructure::~AccelerationStructure() {

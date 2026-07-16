@@ -917,6 +917,22 @@ namespace GEO {
 #endif
             }
 
+            /*
+             * Default constructor.  Allocators are stateless so this is trivial.
+             */
+            aligned_allocator() noexcept = default;
+
+            /*
+             * Templating copy constructor for rebind compatibility.
+             * C++11 allocators must be constructible from allocators of other
+             * specializations (rebind).  MSVC's STL std::vector destructor uses
+             * _Get_proxy_allocator which constructs
+             * aligned_allocator<std::_Container_proxy> from const aligned_allocator<T>&.
+             */
+            template<class U>
+            aligned_allocator(const aligned_allocator<U, ALIGN> &) noexcept {
+            }
+
             template<class T2, int A2>
             operator aligned_allocator<T2, A2>() {
                 return aligned_allocator<T2, A2>();

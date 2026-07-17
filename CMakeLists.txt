@@ -3,8 +3,6 @@ project(mantis)
 
 set(CMAKE_CXX_STANDARD 17)
 
-include(FetchContent)
-
 option(MANTIS_BUILD_EXAMPLES "Build the examples" OFF)
 option(MANTIS_BUILD_BENCH "Build the benchmarks" OFF)
 option(MANTIS_BUILD_TESTS "Build the tests" ON)

@@ -1,3 +1,5 @@
+include(FetchContent)
+
 FetchContent_Declare(
         polyscope
         GIT_REPOSITORY https://github.com/nmwsharp/polyscope.git)

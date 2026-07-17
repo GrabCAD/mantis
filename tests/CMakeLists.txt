@@ -1,9 +1,9 @@
-FetchContent_Declare(
-        eigen
-        GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git
-)
 
-FetchContent_MakeAvailable(eigen)
+set(EIGEN_SAVE_BUILD_TESTING ${BUILD_TESTING})
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+add_subdirectory(../third_party/eigen)
+set(BUILD_TESTING ${EIGEN_SAVE_BUILD_TESTING} CACHE BOOL "" FORCE)
+
 
 add_library(P2M
         P2M/KDTree.cpp

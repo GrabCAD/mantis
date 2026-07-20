@@ -207,7 +207,10 @@ void run_test_case(const std::string& name, size_t num_samples, double eps) {
     std::vector<std::array<float, 3>> points;
     std::vector<std::array<uint32_t, 3>> triangles;
     load_obj(path, points, triangles);
-    mantis::AccelerationStructure accelerator(points, triangles, limit_cube_len);
+    mantis::AccelerationStructure accelerator(
+        (const float*)points.data(), points.size(),
+        (const uint32_t*)triangles.data(), triangles.size(),
+        (float)limit_cube_len);
     auto model = build_p2m(points, triangles);
     check_random_samples(accelerator, model, num_samples, eps);
 }

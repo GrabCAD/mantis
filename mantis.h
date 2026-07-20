@@ -26,9 +26,10 @@ struct AccelerationStructure {
     /* Build from a strided vertex array and packed triangle index array.
      * points is interpreted as: vertices[i] = {points[i*stride+0], points[i*stride+1], points[i*stride+2]}.
      * indices is a flat array of 3 uint32_t per face (indices[3*f+i] = vertex id).
-     * A default stride of 3 covers the common packed-layout case. */
+     * A default stride of 3 covers the common packed-layout case.
+     * If verbose is true, diagnostic messages are printed to stderr during construction. */
     AccelerationStructure(const float *points, size_t num_points, const uint32_t *indices, size_t num_faces,
-                   float limit_cube_len = 1e3f, size_t vertex_stride = 3);
+                   float limit_cube_len = 1e3f, size_t vertex_stride = 3, bool verbose = false);
 
     // no copying
     AccelerationStructure(const AccelerationStructure&) = delete;

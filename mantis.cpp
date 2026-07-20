@@ -63,6 +63,18 @@ namespace mantis {
 
 using index_t = GEO::index_t;
 
+/* Global verbose flag, set per-AccelerationStructure during construction.
+ * Controls diagnostic output from GEO (Logger) and mantis internals. */
+static bool g_verbose = false;
+
+inline void set_verbose(bool v) {
+    g_verbose = v;
+}
+
+inline bool is_verbose() {
+    return g_verbose;
+}
+
 // ============================= MISC STRUCTS ===============================
 
 struct PackedEdge {
@@ -844,7 +856,7 @@ struct Impl {
 
     Impl(const float *vertices, size_t num_vertices, size_t stride,
          const uint32_t *triangles_data, size_t num_triangles,
-         double limit_cube_len);
+         double limit_cube_len, bool verbose);
 
     // for each voronoi cell, check every face of the mesh if the vertex corresponding to the cell
     // "intercepts" the face. This means that after trimming the cell by the face's edge planes, it is
@@ -1006,8 +1018,12 @@ DedupResult deduplicate_points(
 
 Impl::Impl(const float *vertices, size_t num_vertices, size_t stride,
            const uint32_t *triangles_data, size_t num_triangles,
-           double limit_cube_len)
+           double limit_cube_len, bool verbose)
         : limit_cube_len(limit_cube_len) {
+
+    /* Set global verbose flag for GEO logging. */
+    set_verbose(verbose);
+    GEO::Logger::set_quiet_all(!verbose);
 
     /* Deduplicate points and remap triangle indices. Returns owned arrays + counts. */
     DedupResult dedup = deduplicate_points(vertices, num_vertices, stride,
@@ -1508,8 +1524,8 @@ Result Impl::calc_closest_point(GEO::vec3 q) {
 
 AccelerationStructure::AccelerationStructure(const float *points, size_t num_points, const uint32_t *indices,
                                              size_t num_faces,
-                                             float limit_cube_len, size_t vertex_stride)
-        : impl(new Impl(points, num_points, vertex_stride, indices, num_faces, limit_cube_len)) {}
+                                             float limit_cube_len, size_t vertex_stride, bool verbose)
+        : impl(new Impl(points, num_points, vertex_stride, indices, num_faces, limit_cube_len, verbose)) {}
 
 AccelerationStructure::AccelerationStructure(AccelerationStructure &&other) noexcept {
     impl = other.impl;

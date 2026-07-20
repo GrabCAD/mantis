@@ -1515,6 +1515,10 @@ namespace GEO {
 
         static bool is_initialized();
 
+        /* Set quiet mode for all current and future Logger instances.
+         * When quiet is true, all Logger output is suppressed. */
+        static void set_quiet_all(bool quiet);
+
 
         static std::ostream &div(const std::string &title);
 
@@ -1593,6 +1597,7 @@ namespace GEO {
 
     private:
         static SmartPointer<Logger> instance_;
+        static bool default_quiet_; /* Default quiet setting for new instances. */
 
         LoggerStream out_;
         LoggerStream warn_;

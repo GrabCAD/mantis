@@ -2836,6 +2836,9 @@ namespace GEO {
         }
 
         ArgType get_arg_type(const std::string& name) {
+            if(desc_ == nullptr) {
+                return ARG_UNDEFINED;
+            }
             auto it = desc_->args.find(name);
             return it == desc_->args.end()
                    ? ARG_UNDEFINED
@@ -2843,6 +2846,9 @@ namespace GEO {
         }
 
         std::string get_arg(const std::string& name) {
+            if(desc_ == nullptr) {
+                return std::string();
+            }
             return Environment::instance()->get_value(name);
         }
 
@@ -2893,6 +2899,9 @@ namespace GEO {
 
         bool get_arg_bool(const std::string& name) {
             ArgType type = get_arg_type(name);
+            if(type == ARG_UNDEFINED) {
+                return false; /* Default: argument not declared, return false. */
+            }
             geo_assert_arg_type(type, ARG_BOOL);
             return Environment::instance()->has_value(name) &&
                    String::to_bool(get_arg(name));
@@ -4450,6 +4459,7 @@ namespace GEO {
     
 
     SmartPointer<Logger> Logger::instance_;
+    bool Logger::default_quiet_ = true; /* Default: suppress all output. */
 
     void Logger::initialize() {
         instance_ = new Logger();
@@ -4462,6 +4472,17 @@ namespace GEO {
 
     bool Logger::is_initialized() {
         return (instance_ != nullptr);
+    }
+
+    /* Set quiet mode for all Logger instances.
+     * When quiet is true, all Logger output is suppressed.
+     * Called from mantis to control verbosity. */
+    void Logger::set_quiet_all(bool quiet) {
+        if(instance_ != nullptr) {
+            instance_->set_quiet(quiet);
+        }
+        /* Store for future auto-initialized instances. */
+        default_quiet_ = quiet;
     }
     
     bool Logger::set_local_value(
@@ -4611,7 +4632,7 @@ namespace GEO {
         status_(this),
         log_everything_(true),
         current_feature_changed_(false),
-        quiet_(true),
+        quiet_(default_quiet_), /* Use global default. */
         pretty_(true),
         minimal_(false),
 	notifying_error_(false)
@@ -4619,7 +4640,7 @@ namespace GEO {
         // Add a default client printing stuff to std::cout
         register_client(new ConsoleLogger());
 #ifdef GEO_DEBUG
-        quiet_ = false;
+        quiet_ = false; /* Debug builds always verbose. */
 #endif        
     }
 
@@ -4627,15 +4648,12 @@ namespace GEO {
     }
 
     Logger* Logger::instance() {
-        // Do not use geo_assert here:
-	//  if the instance is nullptr, geo_assert will
-        // call the Logger to print the assertion failure, thus ending in a
-        // infinite loop.
+        // Auto-initialize on first access to avoid crashes when
+        // Logger::initialize() was not called explicitly.
         if(instance_ == nullptr) {
-            std::cerr
-                << "CRITICAL: Accessing uninitialized Logger instance"
-                << std::endl;
-            geo_abort();
+            instance_ = new Logger();
+            /* Skip Environment::instance()->add_environment(instance_)
+             * to avoid creating the Environment singleton as global state. */
         }
         return instance_;
     }
@@ -6344,86 +6362,31 @@ namespace GEO {
 
 /******* extracted from ../basic/progress.cpp *******/
 
-#include <stack>
+/* Progress statics removed (progress_client_, progress_tasks_, task_canceled_).
+ * All progress functions are now no-ops. ProgressTask is kept for API
+ * compatibility but does nothing. */
 
 namespace {
 
     using namespace GEO;
 
-    ProgressClient_var progress_client_;
-    std::stack<const ProgressTask*> progress_tasks_;
-    bool task_canceled_ = false;
-
     void begin_task(const ProgressTask* task) {
-        task_canceled_ = false;
-        progress_tasks_.push(task);
-
-        if(progress_client_) {
-            progress_client_->begin();
-        }
+        geo_argused(task);
     }
 
     void reset_task(const ProgressTask* task) {
         geo_argused(task);
-        task_canceled_ = false;
     }
 
     void task_progress(index_t step, index_t percent) {
-        if(task_canceled_) {
-            throw TaskCanceled();
-        }
-
-        if(progress_client_) {
-            progress_client_->progress(step, percent);
-        }
+        geo_argused(step);
+        geo_argused(percent);
     }
 
     void end_task(const ProgressTask* task) {
-        geo_assert(!progress_tasks_.empty());
-        geo_assert(progress_tasks_.top() == task);
-
-        if(progress_client_) {
-            progress_client_->end(task_canceled_);
-        }
-
-        progress_tasks_.pop();
-        if(progress_tasks_.empty()) {
-            task_canceled_ = false;
-        }
+        geo_argused(task);
     }
 
-    class TerminalProgressClient : public ProgressClient {
-    public:
-        
-	void begin() override {
-            const ProgressTask* task = Progress::current_progress_task();
-            CmdLine::ui_progress(task->task_name(), 0, 0);
-        }
-
-        
-	void progress(index_t step, index_t percent) override {
-            const ProgressTask* task = Progress::current_progress_task();
-            CmdLine::ui_progress(task->task_name(), step, percent);
-        }
-
-        
-	void end(bool canceled) override {
-            const ProgressTask* task = Progress::current_progress_task();
-            double elapsed = SystemStopwatch::now() - task->start_time();
-            if(canceled) {
-                CmdLine::ui_progress_canceled(
-                    task->task_name(), elapsed, task->percent()
-                );
-            } else {
-                CmdLine::ui_progress_time(task->task_name(), elapsed);
-            }
-        }
-
-    protected:
-        
-	~TerminalProgressClient() override {
-        }
-    };
 }
 
 
@@ -6439,33 +6402,31 @@ namespace GEO {
     namespace Progress {
 
         void initialize() {
-            set_client(new TerminalProgressClient());
+            /* No-op: progress tracking removed. */
         }
 
         void terminate() {
-            set_client(nullptr);
+            /* No-op: progress tracking removed. */
         }
 
         void set_client(ProgressClient* client) {
-            progress_client_ = client;
+            geo_argused(client);
         }
 
         const ProgressTask* current_progress_task() {
-            return progress_tasks_.empty() ? nullptr : progress_tasks_.top();
+            return nullptr;
         }
 
         void cancel() {
-            if(!progress_tasks_.empty()) {
-                task_canceled_ = true;
-            }
+            /* No-op: progress tracking removed. */
         }
 
         bool is_canceled() {
-            return task_canceled_;
+            return false;
         }
 
         void clear_canceled() {
-            task_canceled_ = false;
+            /* No-op: progress tracking removed. */
         }
     }
 
@@ -6539,7 +6500,7 @@ namespace GEO {
     }
 
     bool ProgressTask::is_canceled() const {
-        return task_canceled_;
+        return false; /* Progress tracking removed. */
     }
 
     void ProgressTask::update() {
@@ -6582,9 +6543,6 @@ namespace {
     bool cancel_initialized_ = false;
     bool cancel_enabled_ = false;
 
-    double start_time_ = 0.0;
-
-    
 
     class ProcessEnvironment : public Environment {
     protected:
@@ -6796,76 +6754,26 @@ namespace GEO {
         
         void initialize(int flags) {
 
-            Environment* env = Environment::instance();
-            env->add_environment(new ProcessEnvironment);
-
+            /* Thread manager setup - thread-related state is kept as instructed. */
             if(!os_init_threads()) {
 #ifdef GEO_OPENMP
-                Logger::out("Process")
-                    << "Using OpenMP threads"
-                    << std::endl;
                 set_thread_manager(new OMPThreadManager);
 #else
-                Logger::out("Process")
-                    << "Multithreading not supported, going monothread"
-                    << std::endl;
                 set_thread_manager(new MonoThreadingThreadManager);
 #endif
             }
 
-	    if(
-		(::getenv("GEO_NO_SIGNAL_HANDLER") == nullptr) &&
-		(flags & GEOGRAM_INSTALL_HANDLERS) != 0
-	    ) {
-		os_install_signal_handlers();
-	    }
-	    
+            /* Signal handlers removed: no global signal handler installation. */
+
             // Initialize Process default values
             enable_multithreading(multithreading_enabled_);
             set_max_threads(number_of_cores());
             enable_FPE(fpe_enabled_);
             enable_cancel(cancel_enabled_);
-
-            start_time_ = SystemStopwatch::now();
         }
 
         void show_stats() {
-
-            Logger::out("Process") << "Total elapsed time: " 
-                                   << SystemStopwatch::now() - start_time_
-                                   << "s" << std::endl;
-
-            const size_t K=size_t(1024);
-            const size_t M=K*K;
-            const size_t G=K*M;
-            
-            size_t max_mem = Process::max_used_memory() ;
-            size_t r = max_mem;
-            
-            size_t mem_G = r / G;
-            r = r % G;
-            size_t mem_M = r / M;
-            r = r % M;
-            size_t mem_K = r / K;
-            r = r % K;
-            
-            std::string s;
-            if(mem_G != 0) {
-                s += String::to_string(mem_G)+"G ";
-            }
-            if(mem_M != 0) {
-                s += String::to_string(mem_M)+"M ";
-            }
-            if(mem_K != 0) {
-                s += String::to_string(mem_K)+"K ";
-            }
-            if(r != 0) {
-                s += String::to_string(r);
-            }
-
-            Logger::out("Process") << "Maximum used memory: " 
-                                   << max_mem << " (" << s << ")"
-                                   << std::endl;
+            /* Removed: elapsed time (start_time_ removed). */
         }
 
         void terminate() {
@@ -7671,25 +7579,7 @@ namespace GEO {
         }
 
         void os_install_signal_handlers() {
-
-            // Install signal handlers
-            signal(SIGSEGV, signal_handler);
-            signal(SIGILL, signal_handler);
-            signal(SIGBUS, signal_handler);
-
-            // Use sigaction for SIGFPE as it provides more details 
-            // about the error.
-            struct sigaction sa, old_sa;
-            sa.sa_flags = SA_SIGINFO;
-            sa.sa_sigaction = fpe_signal_handler;
-            sigemptyset(&sa.sa_mask);
-            sigaction(SIGFPE, &sa, &old_sa);
-
-            // Install uncaught c++ exception handlers
-            std::set_terminate(terminate_handler);
-
-            // Install memory allocation handler
-            std::set_new_handler(memory_exhausted_handler);
+            /* No-op: signal handlers removed to avoid global state changes. */
         }
 
 
@@ -8243,71 +8133,7 @@ namespace GEO {
 
 #ifdef GEO_COMPILER_MSVC	
         void os_install_signal_handlers() {
-
-            // Install signal handlers
-            signal(SIGSEGV, signal_handler);
-            signal(SIGILL, signal_handler);
-            signal(SIGBREAK, signal_handler);
-            signal(SIGTERM, signal_handler);
-
-            // SIGFPE has a dedicated handler 
-            // that provides more details about the error.
-            typedef void (__cdecl * sighandler_t)(int);
-            signal(SIGFPE, (sighandler_t) fpe_signal_handler);
-
-            // Install uncaught c++ exception handlers	    
-            std::set_terminate(uncaught_exception_handler);
-
-            // Install memory allocation handler
-            _set_new_handler(memory_exhausted_handler);
-            // Also catch malloc errors
-            _set_new_mode(1);
-
-            // Install Windows runtime error handlers.
-            // This code and the above is inspired from a very good article
-            // "Effective Exception Handling in Visual C++" available here:
-            // http://www.codeproject.com/Articles/207464/Exception-Handling-in-Visual-Cplusplus
-
-            // Catch calls to pure virtual functions
-            _set_purecall_handler(pure_call_handler);
-
-            // Catch abort and assertion failures
-            // By default abort() error messages are sent to a dialog box
-            // which blocks the application. This is a very annoying behavior
-            // especially during test sessions.
-            // -> Redirect abort() messages to standard error.
-            signal(SIGABRT, signal_handler);
-            _set_abort_behavior(0, _WRITE_ABORT_MSG);
-
-            // Catch "invalid parameter" runtime assertions
-            _set_invalid_parameter_handler(invalid_parameter_handler);
-
-            // Catch runtime check errors
-            _RTC_SetErrorFuncW(runtime_error_handler);
-
-            // Some debug runtime errors are not caught by the error handlers
-            // installed above. We must install a custom report hook called by
-            // _CrtDbgReport that prints the error message, print the stack
-            // trace and exit the application.
-            // NOTE: when this hook is installed, it takes precedence over the
-            // invalid_parameter_handler(), but not over the 
-            // runtime_error_handler().
-            // Windows error handling is a nightmare!
-            _CrtSetReportHook(debug_report_hook);
-
-            // By default runtime error messages are sent to a dialog box
-            // which blocks the application. This is a very annoying behavior
-            // especially during test sessions.
-            // -> Redirect runtime messages to standard error by security
-            _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
-            _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
-            _CrtSetReportMode(_CRT_WARN, _CRTDBG_MODE_FILE);
-            _CrtSetReportFile(_CRT_WARN, _CRTDBG_FILE_STDERR);
-            _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
-            _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
- 
-            // Do not open dialog box on error 
-	    SetErrorMode(SEM_NOGPFAULTERRORBOX);
+            /* No-op: signal handlers removed to avoid global state changes. */
         }
 #else
         void os_install_signal_handlers() {
@@ -8382,29 +8208,18 @@ namespace GEO {
 
 namespace GEO {
 
-    namespace {
-#ifdef GEO_DEBUG
-        AssertMode assert_mode_ = ASSERT_ABORT;        
-#else
-        AssertMode assert_mode_ = ASSERT_THROW;
-#endif        
-        bool aborting = false;
-    }
+    /* Assert mode fixed to ASSERT_THROW for library safety.
+     * No runtime state (assert_mode_, aborting removed). */
 
     void set_assert_mode(AssertMode mode) {
-        assert_mode_ = mode;
+        geo_argused(mode); /* No-op: mode is compile-time fixed. */
     }
 
     AssertMode assert_mode() {
-        return assert_mode_;
+        return ASSERT_THROW;
     }
 
     void geo_abort() {
-        // Avoid assert in assert !!
-        if(aborting) {
-            Process::brute_force_kill();
-        }
-        aborting = true;
         abort();
     }
 
@@ -8415,6 +8230,14 @@ namespace GEO {
 	geo_abort();
 #endif	
     }
+
+    /* Helper to print and throw on assertion failure. */
+    static void assertion_failed_impl(const std::string& msg) {
+        if(Logger::instance()->is_quiet()) {
+            fprintf(stderr, "%s\n", msg.c_str());
+        }
+        throw std::runtime_error(msg);
+    }
     
     void geo_assertion_failed(
         const std::string& condition_string,
@@ -8424,20 +8247,7 @@ namespace GEO {
         os << "Assertion failed: " << condition_string << ".\n";
         os << "File: " << file << ",\n";
         os << "Line: " << line;
-
-        if(assert_mode_ == ASSERT_THROW) {
-	    if(Logger::instance()->is_quiet()) {
-		std::cerr << os.str()
-			  << std::endl;
-	    }
-	    throw std::runtime_error(os.str());
-        } else if(assert_mode_ == ASSERT_ABORT) {
-            Logger::err("Assert") << os.str() << std::endl;
-            geo_abort();
-        } else {
-            Logger::err("Assert") << os.str() << std::endl;
-	    geo_breakpoint();
-	}
+        assertion_failed_impl(os.str());
     }
 
     void geo_range_assertion_failed(
@@ -8449,17 +8259,7 @@ namespace GEO {
             << " in [ " << min_value << " ... " << max_value << " ].\n";
         os << "File: " << file << ",\n";
         os << "Line: " << line;
-
-        if(assert_mode_ == ASSERT_THROW) {
-            if(Logger::instance()->is_quiet()) {
-                std::cerr << os.str()
-                          << std::endl;
-            }
-            throw std::runtime_error(os.str());
-        } else {
-            Logger::err("Assert") << os.str() << std::endl;
-            geo_abort();
-        }
+        assertion_failed_impl(os.str());
     }
 
     void geo_should_not_have_reached(
@@ -8469,17 +8269,7 @@ namespace GEO {
         os << "Control should not have reached this point.\n";
         os << "File: " << file << ",\n";
         os << "Line: " << line;
-
-        if(assert_mode_ == ASSERT_THROW) {
-            if(Logger::instance()->is_quiet()) {
-                std::cerr << os.str()
-                          << std::endl;
-            }
-            throw std::runtime_error(os.str());
-        } else {
-            Logger::err("Assert") << os.str() << std::endl;
-            geo_abort();
-        }
+        assertion_failed_impl(os.str());
     }
 }
 
@@ -34675,114 +34465,23 @@ namespace GEO {
 	if(initialized) {
 	    return;
 	}
-	
-        // When locale is set to non-us countries,
-        // this may cause some problems when reading
-        // floating-point numbers (some locale expect
-        // a decimal ',' instead of a '.').
-        // This restores the default behavior for
-        // reading floating-point numbers.
-#ifdef GEO_OS_UNIX
-        setenv("LC_NUMERIC","POSIX",1);
-#endif
 
-#ifndef GEOGRAM_PSM						
-        Environment* env = Environment::instance();
-        env->set_value("version", VORPALINE_VERSION);
-        env->set_value("release_date", VORPALINE_BUILD_DATE);
-        env->set_value("SVN revision", VORPALINE_SVN_REVISION);        
-#endif
-	FileSystem::initialize();
-        Logger::initialize();
+        /* Minimal initialization for PSM build.
+         * Removed: setenv(LC_NUMERIC), Environment singleton, Logger singleton,
+         *          FileSystem, Progress, CmdLine, atexit handler, errno reset,
+         *          attribute type registration, ImageLibrary.
+         * Kept: Process (thread manager), PCK, Delaunay factory registration.
+         */
         Process::initialize(flags);
-        Progress::initialize();
-        CmdLine::initialize();
         PCK::initialize();
         Delaunay::initialize();
 
-#ifndef GEOGRAM_PSM		
-	Biblio::initialize();
-#endif
-        atexit(GEO::terminate);
-
-#ifndef GEOGRAM_PSM	
-        mesh_io_initialize();
-#endif
-	
-        // Clear last system error
-        errno = 0;
-
-#ifndef GEOGRAM_PSM		
-        // Register attribute types that can be saved into files.
-        geo_register_attribute_type<Numeric::uint8>("bool");                
-        geo_register_attribute_type<char>("char");        
-        geo_register_attribute_type<int>("int");
-        geo_register_attribute_type<unsigned int>("unsigned int");	
-        geo_register_attribute_type<index_t>("index_t");
-        geo_register_attribute_type<signed_index_t>("signed_index_t");	
-        geo_register_attribute_type<float>("float");
-        geo_register_attribute_type<double>("double");
-
-        geo_register_attribute_type<vec2>("vec2");
-        geo_register_attribute_type<vec3>("vec3");
-#endif
-	
-#ifdef GEO_OS_EMSCRIPTEN
-        
-        // This mounts the local file system when an emscripten-compiled
-        // program runs in node.js.
-        // Current working directory is mounted in /working,
-        // and root directory is mounted in /root
-        
-        EM_ASM(
-            if(typeof module !== 'undefined' && this.module !== module) {
-                FS.mkdir('/working');
-                FS.mkdir('/root');            
-                FS.mount(NODEFS, { root: '.' }, '/working');
-                FS.mount(NODEFS, { root: '/' }, '/root');
-            }
-        );
-#endif
-
-#ifndef GEOGRAM_PSM
-        ImageLibrary::initialize() ;
-
-        geo_declare_image_serializer<ImageSerializerSTBReadWrite>("png");
-        geo_declare_image_serializer<ImageSerializerSTBReadWrite>("jpg");
-        geo_declare_image_serializer<ImageSerializerSTBReadWrite>("jpeg");
-        geo_declare_image_serializer<ImageSerializerSTBReadWrite>("tga");
-        geo_declare_image_serializer<ImageSerializerSTBReadWrite>("bmp");
-	
-        geo_declare_image_serializer<ImageSerializer_xpm>("xpm") ;
-        geo_declare_image_serializer<ImageSerializer_pgm>("pgm") ;		
-#endif
-	
 	initialized = true;
     }
 
     void terminate() {
-        if(
-            CmdLine::arg_is_declared("sys:stats") &&
-            CmdLine::get_arg_bool("sys:stats") 
-        ) {
-            Logger::div("System Statistics");
-            PCK::show_stats();
-            Process::show_stats();
-        }
-
-        PCK::terminate();
-
-#ifndef GEOGRAM_PSM
-        ImageLibrary::terminate() ;
-	Biblio::terminate();
-#endif
-	
-        Progress::terminate();
+        /* Minimal termination for PSM build. */
         Process::terminate();
-        CmdLine::terminate();
-        Logger::terminate();
-	FileSystem::terminate();
-        Environment::terminate();
     }
 }
 

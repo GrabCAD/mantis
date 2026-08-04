@@ -67,11 +67,11 @@ using index_t = GEO::index_t;
  * Controls diagnostic output from GEO (Logger) and mantis internals. */
 static bool g_verbose = false;
 
-inline void set_verbose(bool v) {
+void set_verbose(bool v) {
     g_verbose = v;
 }
 
-inline bool is_verbose() {
+bool is_verbose() {
     return g_verbose;
 }
 
@@ -1021,9 +1021,18 @@ Impl::Impl(const float *vertices, size_t num_vertices, size_t stride,
            double limit_cube_len, bool verbose)
         : limit_cube_len(limit_cube_len) {
 
-    /* Set global verbose flag for GEO logging. */
+    /* Set global verbose flag for GEO logging BEFORE initialization.
+     * This ensures Logger::default_quiet_ is set before any Logger output. */
     set_verbose(verbose);
     GEO::Logger::set_quiet_all(!verbose);
+
+    /* Initialize GEO (Delaunay, Process thread manager, etc.).
+     * Called explicitly here after quiet flag is set, not via static local. */
+    static bool geogram_initialized = false;
+    if(!geogram_initialized) {
+        GEO::initialize();
+        geogram_initialized = true;
+    }
 
     /* Deduplicate points and remap triangle indices. Returns owned arrays + counts. */
     DedupResult dedup = deduplicate_points(vertices, num_vertices, stride,
@@ -1034,12 +1043,6 @@ Impl::Impl(const float *vertices, size_t num_vertices, size_t stride,
     this->num_points = dedup.num_points;
     this->triangles = dedup.triangles;
     this->num_triangles = dedup.num_triangles;
-
-    static int init_geogram = [] {
-        GEO::initialize();
-        return 0;
-    }();
-    (void) init_geogram;
 
     /* Verify point validity on deduplicated data. */
     assert(check_points(points, num_points));

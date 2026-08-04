@@ -5,6 +5,8 @@
 #include <Model.h> // original p2m implementation
 
 #include <random>
+#include <chrono>
+#include <cstdio>
 
 void load_obj(const std::string &path,
               std::vector<std::array<float, 3>> &points,
@@ -207,12 +209,25 @@ void run_test_case(const std::string& name, size_t num_samples, double eps) {
     std::vector<std::array<float, 3>> points;
     std::vector<std::array<uint32_t, 3>> triangles;
     load_obj(path, points, triangles);
+
+    printf("\n=== %s (%zu vertices, %zu faces, %zu queries) ===\n",
+           name.c_str(), points.size(), triangles.size(), num_samples);
+
+    auto t0 = std::chrono::steady_clock::now();
     mantis::AccelerationStructure accelerator(
         (const float*)points.data(), points.size(),
         (const uint32_t*)triangles.data(), triangles.size(),
         (float)limit_cube_len);
+    auto t1 = std::chrono::steady_clock::now();
+    double construction_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    printf("  Construction: %.1f ms\n", construction_ms);
+
     auto model = build_p2m(points, triangles);
     check_random_samples(accelerator, model, num_samples, eps);
+    auto t2 = std::chrono::steady_clock::now();
+    double query_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
+    printf("  Query total:  %.1f ms  (%.3f ms/query)\n",
+           query_ms, query_ms / num_samples);
 }
 
 
@@ -243,4 +258,8 @@ TEST_CASE("fandisk") {
 
 TEST_CASE("crank_pin") {
     run_test_case("crank_pin.obj", 1e4, 1e-6);
+}
+
+TEST_CASE("m3d_cowling") {
+    run_test_case("m3d_cowling.obj", 1e4, 1e-6);
 }

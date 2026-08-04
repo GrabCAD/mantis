@@ -4658,46 +4658,64 @@ namespace GEO {
         return instance_;
     }
 
+    /* No-op stream that discards all output. Used when Logger is quiet. */
+    static std::ostream& null_stream() {
+        static class NullBuf : public std::streambuf {
+            int overflow(int c) override { return c; }
+        } buf;
+        static std::ostream os(&buf);
+        return os;
+    }
+
     std::ostream& Logger::div(const std::string& title) {
-	std::ostream& result = 
-   	    (is_initialized() && !Process::is_running_threads()) ?
-            instance()->div_stream(title) :
-            (std::cerr << "=====" << title << std::endl);
-	return result;
+        if(!Process::is_running_threads()) {
+            Logger *inst = instance(); /* auto-inits with correct quiet_. */
+            if(!inst->is_quiet()) {
+                return inst->div_stream(title);
+            }
+        }
+        return null_stream();
     }
 
     std::ostream& Logger::out(const std::string& feature) {
-	std::ostream& result =
-	    (is_initialized() && !Process::is_running_threads()) ?
-            instance()->out_stream(feature) :
-            (std::cerr << "    [" << feature << "] ");
-	return result;
+        if(!Process::is_running_threads()) {
+            Logger *inst = instance(); /* auto-inits with correct quiet_. */
+            if(!inst->is_quiet()) {
+                return inst->out_stream(feature);
+            }
+        }
+        return null_stream();
     }
 
     std::ostream& Logger::err(const std::string& feature) {
-	std::ostream& result = 
-	    (is_initialized() && !Process::is_running_threads()) ?	    
-            instance()->err_stream(feature) :
-            (std::cerr << "(E)-[" << feature << "] ");
-	return result;
+        if(!Process::is_running_threads()) {
+            Logger *inst = instance(); /* auto-inits with correct quiet_. */
+            if(!inst->is_quiet()) {
+                return inst->err_stream(feature);
+            }
+        }
+        return null_stream();
     }
 
     std::ostream& Logger::warn(const std::string& feature) {
-	std::ostream& result = 
-	    (is_initialized() && !Process::is_running_threads()) ?	    	    
-            instance()->warn_stream(feature) :
-            (std::cerr << "(W)-[" << feature << "] ");
-	return result;
+        if(!Process::is_running_threads()) {
+            Logger *inst = instance(); /* auto-inits with correct quiet_. */
+            if(!inst->is_quiet()) {
+                return inst->warn_stream(feature);
+            }
+        }
+        return null_stream();
     }
 
     std::ostream& Logger::status() {
-	std::ostream& result =	
-	    (is_initialized() && !Process::is_running_threads()) ?
-            instance()->status_stream() :
-            (std::cerr << "[status] ");
-	return result;
+        if(!Process::is_running_threads()) {
+            Logger *inst = instance(); /* auto-inits with correct quiet_. */
+            if(!inst->is_quiet()) {
+                return inst->status_stream();
+            }
+        }
+        return null_stream();
     }
-
     std::ostream& Logger::div_stream(const std::string& title) {
         if(!quiet_) {
             current_feature_changed_ = true;
@@ -19580,7 +19598,7 @@ namespace {
 
     using namespace GEO;
     
-    GEO::PCK::SOSMode SOS_mode_ = GEO::PCK::SOS_ADDRESS; 
+    /* SOS_mode_ removed: hardcoded to SOS_ADDRESS in SOS_sort(). */ 
 
     class LexicoCompare {
     public:
@@ -19622,15 +19640,11 @@ namespace {
     void GEOGRAM_API SOS_sort(
         const double** begin, const double** end, index_t dim
     ) {
-	if(SOS_mode_ == PCK::SOS_ADDRESS) {
-	    std::sort(begin, end);
-	} else {
-	    if(dim == 3) {
-		std::sort(begin, end, lexico_compare_3d);
-	    } else {
-		std::sort(begin, end, LexicoCompare(dim));
-	    }
-	}
+        /* SOS_mode_ removed: hardcoded to SOS_ADDRESS (default).
+         * SOS_LEXICO is only needed for periodic Delaunay, which
+         * Mantis does not use. Parameter 'dim' kept for API compat. */
+        geo_argused(dim);
+        std::sort(begin, end);
     }
     
     inline double max4(double x1, double x2, double x3, double x4) {
@@ -20944,11 +20958,11 @@ namespace GEO {
     namespace PCK {
 
 	void set_SOS_mode(SOSMode m) {
-	    SOS_mode_ = m;
+	    geo_argused(m); /* No-op: SOS_mode_ removed, hardcoded to SOS_ADDRESS. */
 	}
 
 	SOSMode get_SOS_mode() {
-	    return SOS_mode_;
+	    return SOS_ADDRESS; /* Always SOS_ADDRESS. */
 	}
 
 	

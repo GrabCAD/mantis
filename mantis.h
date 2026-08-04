@@ -22,6 +22,11 @@ struct Result {
 
 struct Impl;
 
+/* Control and query global verbose flag.
+ * Used internally to gate diagnostic output. */
+void set_verbose(bool v);
+bool is_verbose();
+
 struct AccelerationStructure {
     /* Build from a strided vertex array and packed triangle index array.
      * points is interpreted as: vertices[i] = {points[i*stride+0], points[i*stride+1], points[i*stride+2]}.
